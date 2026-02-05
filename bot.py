@@ -4,53 +4,72 @@ import asyncio
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-import uvicorn
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-PORT = int(os.environ.get('PORT', 10000))  # 🔥 Render $PORT
+if not BOT_TOKEN:
+    print("❌ BOT_TOKEN не найден!")
+    exit(1)
 
-bot = Bot(token=BOT_TOKEN)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Хранилища
 reminders = {}
 user_states = {}
-application = None
 
-app = FastAPI()
-
-# 🔥 ХЕНДЛЕРЫ (БЕЗ ИЗМЕНЕНИЙ)
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.message.chat
+async def start(update, context):
+    """🔥 /start"""
     user = update.message.from_user
-    print(f"🚀 /start от {user.first_name} ({user.id})")
+    chat = update.message.chat
+    
+    print(f"🚀 /start от {user.first_name} ({user.id}) в {chat.id}")
     
     keyboard = [[InlineKeyboardButton("📝 Создать задачу", callback_data='create_task')]]
     await update.message.reply_text(
-        f"Привет, {user.first_name}! 🔔\n\nЯ напомню задачу ВСЕМ!",
+        f"✅ **Привет, {user.first_name}!** 🔔\n\n"
+        f"**МНОГОПОЛЬЗОВАТЕЛЬСКИЙ НАПОМИНАТЕЛЬ**\n\n"
+        f"👥 Работает в **ЛС** и **группах**\n"
+        f"🔔 Напоминает **ВСЕМ участникам**",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
     )
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(update, context):
+    """🔥 Кнопки"""
     query = update.callback_query
     await query.answer()
     
+    user_id = query.from_user.id
+    print(f"🔘 {query.data} от {user_id}")
+    
     if query.data == 'create_task':
-        user_states[query.from_user.id] = 'waiting_task'
-        await query.edit_message_text("📝 Напиши задачу для чата")
+        user_states[user_id] = 'waiting_task'
+        await query.edit_message_text(
+            "📝 **Напиши задачу для чата:**\n\n"
+            "❗ **ВСЕ участники** увидят напоминание!"
+        )
     
     elif query.data.startswith('stop_'):
-        index = int(query.data.split('_')[1])
-        chat_id = query.message.chat.id
-        if chat_id in reminders and len(reminders[chat_id]) > index:
-            reminders[chat_id].pop(index)
-            await query.edit_message_text("✅ Остановлено!")
+        try:
+            index = int(query.data.split('_')[1])
+            chat_id = query.message.chat.id
+            if chat_id in reminders and len(reminders[chat_id]) > index:
+                reminders[chat_id].pop(index)
+                await query.edit_message_text("✅ **Напоминание остановлено!**")
+                print(f"🛑 #{index} удалено")
+        except:
+            await query.edit_message_text("❌ Ошибка!")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update, context):
+    """🔥 Сообщения"""
     user_id = update.message.from_user.id
     text = update.message.text
     chat_id = update.message.chat.id
+    user_name = update.message.from_user.first_name
+    
+    print(f"💬 {user_name} ({user_id}): {text}")
     
     if user_id not in user_states:
         return
@@ -60,14 +79,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'waiting_task':
         context.user_data['task_text'] = text
         user_states[user_id] = 'waiting_time'
-        await update.message.reply_text("✅ Задача принята!\n⏰ `дд.мм чч:мм`", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ **Задача '{text}' принята!**\n\n"
+            f"⏰ **Когда напомнить ВСЕМ?**\n"
+            f"`дд.мм чч:мм`",
+            parse_mode='Markdown'
+        )
     
     elif state == 'waiting_time':
         try:
             pattern = r'(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})'
             match = re.match(pattern, text.strip())
             if not match:
-                await update.message.reply_text("❌ `дд.мм чч:мм`", parse_mode='Markdown')
+                await update.message.reply_text("❌ **Формат: `дд.мм чч:мм`**", parse_mode='Markdown')
                 return
             
             day, month, hour, minute = map(int, match.groups())
@@ -78,7 +102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             reminder = {
                 'text': context.user_data['task_text'],
-                'author': update.message.from_user.first_name,
+                'author': user_name,
                 'datetime': remind_date,
                 'chat_id': chat_id,
                 'resends': 0,
@@ -90,82 +114,82 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reminders[chat_id].append(reminder)
             
             await update.message.reply_text(
-                f"✅ Создано!\n📋 **{reminder['text']}**\n⏰ {remind_date.strftime('%d.%m %H:%M')}",
+                f"✅ **{user_name} запланировал!**\n\n"
+                f"📋 **{reminder['text']}**\n"
+                f"⏰ **{remind_date.strftime('%d.%m %H:%M')}**\n"
+                f"🔄 **10 повторений** по 20 сек\n"
+                f"🛑 **Любой может остановить**",
                 parse_mode='Markdown'
             )
             del user_states[user_id]
+            print(f"✅ Напоминание: {reminder['text']}")
             
-        except:
-            await update.message.reply_text("❌ `дд.мм чч:мм`", parse_mode='Markdown')
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            await update.message.reply_text("❌ **Формат: `дд.мм чч:мм`**", parse_mode='Markdown')
 
-async def check_reminders():
-    print("🔄 Проверка напоминаний...")
+async def check_reminders(app):
+    """🔥 Фоновая проверка"""
+    print("🔄 **ПРОВЕРКА НАПОМИНАНИЙ запущена**")
+    
     while True:
         try:
             now = datetime.now()
-            for chat_id in list(reminders):
-                if chat_id not in reminders: continue
-                rlist = reminders[chat_id]
+            for chat_id in list(reminders.keys()):
+                if chat_id not in reminders:
+                    continue
+                
+                reminders_list = reminders[chat_id]
                 i = 0
-                while i < len(rlist):
-                    r = rlist[i]
-                    if r['datetime'] <= now and r['resends'] < r['max_resends']:
-                        keyboard = [[InlineKeyboardButton("🛑 Стоп", callback_data=f'stop_{i}')]]
-                        await bot.send_message(
-                            chat_id, f"🔔 **{r['resends']+1}/10**\n📋 {r['text']}",
-                            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
-                        )
-                        r['resends'] += 1
-                    elif r['resends'] >= r['max_resends']:
-                        del rlist[i]
-                        continue
+                while i < len(reminders_list):
+                    reminder = reminders_list[i]
+                    
+                    if reminder['datetime'] <= now:
+                        if reminder['resends'] < reminder['max_resends']:
+                            try:
+                                keyboard = [[InlineKeyboardButton("🛑 Стоп", callback_data=f'stop_{i}')]]
+                                await app.bot.send_message(
+                                    chat_id,
+                                    f"🔔 **#{reminder['resends'] + 1}/{reminder['max_resends']}**\n\n"
+                                    f"📋 **{reminder['text']}**\n"
+                                    f"👤 **{reminder['author']}**",
+                                    reply_markup=InlineKeyboardMarkup(keyboard),
+                                    parse_mode='Markdown'
+                                )
+                                reminder['resends'] += 1
+                                print(f"🔔 #{reminder['resends']} в {chat_id}")
+                            except Exception as e:
+                                print(f"❌ Отправка: {e}")
+                        else:
+                            del reminders_list[i]
+                            continue
                     i += 1
+            
             await asyncio.sleep(20)
         except Exception as e:
-            print(f"❌ Check: {e}")
+            print(f"❌ Проверка: {e}")
             await asyncio.sleep(20)
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    try:
-        update = Update.de_json(await request.json(), bot)
-        if update and application:
-            await application.process_update(update)
-        return {"ok": True}
-    except Exception as e:
-        print(f"❌ Webhook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-# 🔥 ГЛАВНАЯ ФУНКЦИЯ
 async def main():
-    global application
-    print(f"🚀 PORT={PORT}")
+    print("🚀 **МНОГОПОЛЬЗОВАТЕЛЬСКИЙ БОТ ПОЛЛИНГ**")
+    print(f"✅ Токен: {BOT_TOKEN[:5]}...{BOT_TOKEN[-3:]}")
     
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # Webhook
-    webhook_url = f"https://telegram-c3es.onrender.com/webhook"
-    await bot.set_webhook(url=webhook_url)
-    info = await bot.get_webhook_info()
-    print(f"✅ Webhook: {info.url}")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    asyncio.create_task(check_reminders())
+    asyncio.create_task(check_reminders(app))
     
-    # 🔥 Render порт!
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+    print("✅ **ЗАПУЩЕН!** Тест: `/start`")
+    await app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Остановлен")
 
 
 
