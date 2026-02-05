@@ -1,12 +1,12 @@
 import re
 import logging
+import time
 from datetime import datetime, timedelta
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-import threading
-import time
+from telegram.error import TelegramError
 
-# ТОКЕН В КОДЕ (НЕ Environment!)
+# ТОКЕН В КОДЕ!
 TOKEN = '8598694238:AAHMaIHIXjGpIxHDTZIoGqgjMQalARlmhLs'
 
 logging.basicConfig(level=logging.INFO)
@@ -15,41 +15,38 @@ logger = logging.getLogger(__name__)
 reminders = {}
 user_states = {}
 
-def error_handler(update, context):
-    logger.error(f"Update {update} caused error {context.error}")
-
-async def start(update, context):
+def start(update, context):
     chat = update.message.chat
     user = update.message.from_user
     print(f"🚀 /start от {user.first_name} (ID:{user.id}) в {chat.id}")
     
     keyboard = [[InlineKeyboardButton("📝 Создать задачу", callback_data='create_task')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🔔 Создать напоминание для чата!", reply_markup=reply_markup)
+    update.message.reply_text("🔔 Создать напоминание для чата!", reply_markup=reply_markup)
 
-async def button_handler(update, context):
+def button_handler(update, context):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     chat_id = query.message.chat.id
     user_id = query.from_user.id
     
-    print(f"🔘 Пользователь {user_id} нажал '{query.data}'")
+    print(f"🔘 {user_id} нажал '{query.data}'")
     
     if query.data == 'create_task':
         user_states[user_id] = 'waiting_task'
-        await query.edit_message_text("📝 Напишите задачу:")
+        query.edit_message_text("📝 Напишите задачу:")
     
     elif query.data.startswith('stop_'):
         try:
             index = int(query.data.split('_')[1])
             if chat_id in reminders and len(reminders[chat_id]) > index:
                 removed = reminders[chat_id].pop(index)
-                await query.edit_message_text(f"✅ '{removed['text']}' остановлено!")
+                query.edit_message_text(f"✅ '{removed['text']}' остановлено!")
                 print(f"🛑 Удалено: {removed['text']}")
         except:
-            await query.edit_message_text("❌ Ошибка!")
+            query.edit_message_text("❌ Ошибка!")
 
-async def handle_message(update, context):
+def handle_message(update, context):
     chat_id = update.message.chat.id
     user_id = update.message.from_user.id
     
@@ -61,7 +58,7 @@ async def handle_message(update, context):
     if state == 'waiting_task':
         context.user_data['task'] = update.message.text
         user_states[user_id] = 'waiting_time'
-        await update.message.reply_text("✅ **Задача принята!**\n⏰ Формат: `дд.мм чч:мм`", parse_mode='Markdown')
+        update.message.reply_text("✅ **Задача принята!**\n⏰ Формат: `дд.мм чч:мм`", parse_mode='Markdown')
     
     elif state == 'waiting_time':
         try:
@@ -72,23 +69,26 @@ async def handle_message(update, context):
             
             reminder = {'text': context.user_data['task'], 'time': remind_time, 'sends': 0}
             
-            if chat_id not in reminders: reminders[chat_id] = []
+            if chat_id not in reminders: 
+                reminders[chat_id] = []
             reminders[chat_id].append(reminder)
             
-            await update.message.reply_text(f"✅ Напоминание **{reminder['text']}** в {remind_time.strftime('%H:%M')}", parse_mode='Markdown')
+            update.message.reply_text(f"✅ Напоминание **{reminder['text']}** в {remind_time.strftime('%H:%M')}", parse_mode='Markdown')
             del user_states[user_id]
-            print(f"✅ Создана задача для {chat_id}")
+            print(f"✅ Задача для {chat_id}: {reminder['text']}")
         except:
-            await update.message.reply_text("❌ Формат: `дд.мм чч:мм`")
+            update.message.reply_text("❌ Формат: `дд.мм чч:мм`")
 
-def reminder_thread(app):
-    """🔥 ОТДЕЛЬНЫЙ ТРЕД для напоминаний (НЕ блокирует бот!)"""
-    print("🔄 Поток напоминаний запущен")
+def check_reminders(app):
+    """🔥 СИНХРОННАЯ проверка напоминаний в цикле"""
+    print("🔄 Проверка напоминаний запущена")
     while True:
         try:
             now = datetime.now()
             for chat_id, tasks in list(reminders.items()):
-                for i, task in enumerate(tasks[:]):
+                i = 0
+                while i < len(tasks):
+                    task = tasks[i]
                     if task['time'] <= now and task['sends'] < 3:
                         try:
                             keyboard = [[InlineKeyboardButton("🛑 Стоп", callback_data=f'stop_{i}')]]
@@ -100,18 +100,22 @@ def reminder_thread(app):
                             )
                             task['sends'] += 1
                             task['time'] += timedelta(seconds=30)
-                            print(f"🔔 Напоминание #{task['sends']}")
-                        except Exception as e:
-                            print(f"❌ Ошибка отправки: {e}")
+                            print(f"🔔 #{task['sends']}/3: {task['text']}")
+                        except TelegramError as e:
+                            print(f"❌ Telegram ошибка: {e}")
+                        i += 1
                     elif task['sends'] >= 3:
-                        tasks.pop(i)
-            time.sleep(10)  # Проверяем каждые 10 сек
+                        print(f"✅ Завершено: {task['text']}")
+                        del tasks[i]
+                    else:
+                        i += 1
+            time.sleep(10)
         except Exception as e:
-            print(f"❌ Поток ошибки: {e}")
+            print(f"❌ Checker: {e}")
             time.sleep(10)
 
 def main():
-    print("🚀 Telegram Reminder Bot v2.0")
+    print("🚀 Telegram Reminder Bot v3.0 (Render)")
     print(f"📱 Токен: {TOKEN[:20]}...")
     
     app = Application.builder().token(TOKEN).build()
@@ -119,20 +123,22 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_error_handler(error_handler)
     
-    # 🔥 Запуск потока напоминаний в ОТДЕЛЬНОМ ТРЕДЕ
-    reminder_worker = threading.Thread(target=reminder_thread, args=(app,), daemon=True)
-    reminder_worker.start()
+    # 🔥 Запуск проверки напоминаний в отдельном процессе
+    import multiprocessing
+    reminder_process = multiprocessing.Process(target=check_reminders, args=(app,), daemon=True)
+    reminder_process.start()
     
-    print("✅ Бот готов! Отправьте /start")
+    print("✅ Бот готов! /start")
     print("🔄 Напоминания каждые 10 сек")
     
-    # 🔥 ПРОСТОЙ run_polling БЕЗ asyncio.run()!
+    # 🔥 ПРОСТОЙ БЕЗОШИБНЫЙ polling
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
+
+
 
 
 
