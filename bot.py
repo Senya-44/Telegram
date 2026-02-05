@@ -58,7 +58,6 @@ def handle_message(update, context):
     
     elif state == 'waiting_time':
         try:
-            # ✅ ПРАВИЛЬНЫЙ regex!
             day, month, hour, minute = map(int, re.match(r'(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})', update.message.text.strip()).groups())
             now = datetime.now()
             remind_time = now.replace(day=day, month=month, hour=hour, minute=minute)
@@ -78,7 +77,7 @@ def handle_message(update, context):
             update.message.reply_text("❌ Формат: `дд.мм чч:мм`")
 
 def reminder_checker(app):
-    """🔥 ОТДЕЛЬНЫЙ ТРЕД для напоминаний"""
+    """🔥 ТРЕД напоминаний (НЕ asyncio!)"""
     print("🔄 Напоминания запущены в фоне!")
     while True:
         try:
@@ -96,7 +95,7 @@ def reminder_checker(app):
                             )
                             task['sends'] += 1
                             task['time'] += timedelta(seconds=30)
-                            print(f"🔔 #{task['sends']}: {task['text']}")
+                            print(f"🔔 #{task['sends']}: {task['text']} в {chat_id}")
                         except Exception as e:
                             print(f"❌ Send error: {e}")
                     elif task['sends'] >= 3:
@@ -107,7 +106,7 @@ def reminder_checker(app):
             time.sleep(10)
 
 def main():
-    print("🚀 Telegram Reminder Bot v6.0 (Render)")
+    print("🚀 Telegram Reminder Bot v6.0 ✅ THREADING")
     print(f"📱 Токен: {TOKEN[:20]}...")
     
     app = Application.builder().token(TOKEN).build()
@@ -116,15 +115,16 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # 🔥 Запуск напоминаний в ОТДЕЛЬНОМ ТРЕДЕ
+    # 🔥 ТРЕД напоминаний (НЕ asyncio!)
     reminder_thread = threading.Thread(target=reminder_checker, args=(app,), daemon=True)
     reminder_thread.start()
     
     print("✅ Бот + напоминания готовы!")
     print("🔄 Тред напоминаний запущен")
     
-    # 🔥 ОСНОВНОЙ polling НЕ блокируется!
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
+
+
