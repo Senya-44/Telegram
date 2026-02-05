@@ -4,97 +4,149 @@ import logging
 import asyncio
 import threading
 from datetime import datetime, timedelta
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-# Flask app
-flask_app = Flask(__name__)
+app = Flask(__name__)
+
+# Глобальные переменные
+reminders = {}
+user_states = {}
+application = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Глобальные хранилища
-reminders = {}
-user_states = {}
-
-async def error_handler(update, context):
-    logger.error(f"Update {update} caused error {context.error}")
-
-# ВСЕ ВАШИ ФУНКЦИИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ
-# (start, button_handler, handle_message, check_reminders)
-
+# 🔥 ВАШИ ФУНКЦИИ (скопировать из старого кода)
 async def start(update, context):
     chat = update.message.chat
     user = update.message.from_user
+    print(f"🚀 /start от {user.first_name}")
     
-    print(f"🚀 /start от {user.first_name} (@{user.username or 'no_username'})")
-    print(f"   👤 ID: {user.id}")
-    print(f"   📱 Чат: {chat.id} ({chat.type})")
+    keyboard = [[InlineKeyboardButton("📝 Создать задачу", callback_data='create_task')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if chat.type in ['private', 'group', 'supergroup']:
-        keyboard = [[InlineKeyboardButton("📝 Создать задачу", callback_data='create_task')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    welcome_text = f"Привет, {user.first_name}! 🔔\n\nЯ напомню задачу **ВСЕМ**!"
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def button_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'create_task':
+        user_states[query.from_user.id] = 'waiting_task'
+        await query.edit_message_text("📝 Напиши задачу:")
+
+async def handle_message(update, context):
+    user_id = update.message.from_user.id
+    
+    if user_id not in user_states:
+        return
         
-        welcome_text = (
-            f"Привет, {user.first_name}! 🔔\n\n"
-            "Я напомню задачу **ВСЕМ участникам чата**!\n\n"
-            f"👥 Чат: {'Группа' if chat.type in ['group', 'supergroup'] else 'ЛС'}"
-        )
+    state = user_states[user_id]
+    
+    if state == 'waiting_task':
+        context.user_data['task_text'] = update.message.text
+        user_states[user_id] = 'waiting_time'
+        await update.message.reply_text("⏰ Формат: `дд.мм чч:мм`", parse_mode='Markdown')
         
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
-        print(f"✅ ОТВЕТИЛ {user.id} в чате {chat.id}")
+    elif state == 'waiting_time':
+        time_text = update.message.text.strip()
+        pattern = r'(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})'
+        match = re.match(pattern, time_text)
+        
+        if match:
+            day, month, hour, minute = map(int, match.groups())
+            now = datetime.now()
+            remind_date = now.replace(day=day, month=month, hour=hour, minute=minute)
+            
+            if remind_date <= now:
+                remind_date += timedelta(days=1)
+                
+            chat_id = update.message.chat.id
+            reminder = {
+                'text': context.user_data['task_text'],
+                'author': update.message.from_user.first_name,
+                'datetime': remind_date,
+                'chat_id': chat_id,
+                'resends': 0,
+                'max_resends': 10
+            }
+            
+            if chat_id not in reminders:
+                reminders[chat_id] = []
+            reminders[chat_id].append(reminder)
+            
+            await update.message.reply_text(f"✅ Запланировано на {remind_date.strftime('%d.%m %H:%M')}")
+            del user_states[user_id]
+        else:
+            await update.message.reply_text("❌ Формат: `дд.мм чч:мм`")
 
-# ... ВСТАВЬТЕ ЗДЕСЬ ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ ИЗ ВАШЕГО КОДА ...
-# button_handler, handle_message, check_reminders
+async def check_reminders(application):
+    while True:
+        try:
+            now = datetime.now()
+            for chat_id in list(reminders.keys()):
+                if chat_id in reminders:
+                    i = 0
+                    while i < len(reminders[chat_id]):
+                        reminder = reminders[chat_id][i]
+                        if reminder['datetime'] <= now and reminder['resends'] < reminder['max_resends']:
+                            keyboard = [[InlineKeyboardButton("🛑 Стоп", callback_data=f'stop_{i}')]]
+                            await application.bot.send_message(
+                                chat_id, 
+                                f"🔔 {reminder['text']}\n👤 {reminder['author']}",
+                                reply_markup=InlineKeyboardMarkup(keyboard),
+                                parse_mode='Markdown'
+                            )
+                            reminder['resends'] += 1
+                            reminder['datetime'] += timedelta(seconds=20)
+                        i += 1
+            await asyncio.sleep(20)
+        except Exception as e:
+            print(f"❌ Check error: {e}")
+            await asyncio.sleep(20)
 
-def create_application():
-    """Создает Telegram Application"""
-    TOKEN = os.getenv('BOT_TOKEN')
-    if not TOKEN:
-        raise ValueError("❌ BOT_TOKEN не найден!")
-    
-    application = Application.builder().token(TOKEN).build()
-    
-    # Регистрация handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(error_handler)
-    
-    return application
-
-@flask_app.route('/', methods=['GET'])
+@app.route('/')
 def index():
-    return "🚀 Reminder Bot работает!"
+    return "🚀 Bot OK!"
 
-@flask_app.route('/<token>', methods=['POST'])
-def webhook(token):
-    """Webhook endpoint"""
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    global application
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
         asyncio.create_task(application.process_update(update))
         return 'OK'
     except Exception as e:
-        print(f"❌ Webhook error: {e}")
+        print(f"❌ Webhook: {e}")
         return 'Error', 500
 
-def run_reminders():
-    """Фоновая задача напоминаний"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(check_reminders(application))
-
-if __name__ == '__main__':
+def create_application():
     global application
-    application = create_application()
+    TOKEN = os.getenv('BOT_TOKEN')
+    if not TOKEN:
+        raise ValueError("BOT_TOKEN не найден!")
+    
+    application = Application.builder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Запуск фоновой задачи
-    reminder_thread = threading.Thread(target=run_reminders, daemon=True)
-    reminder_thread.start()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    threading.Thread(target=lambda: loop.run_until_complete(check_reminders(application)), daemon=True).start()
     
-    port = int(os.getenv('PORT', 8080))
-    flask_app.run(host='0.0.0.0', port=port)
+    return application
+
+if __name__ == '__main__':
+    create_application()
+    port = int(os.getenv('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+
 
 
 
