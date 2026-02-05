@@ -96,7 +96,7 @@ async def reminder_checker(application):
             await asyncio.sleep(10)
 
 async def main():
-    token = os.getenv('TOKEN')
+    token = os.getenv('8598694238:AAHMaIHIXjGpIxHDTZIoGqgjMQalARlmhLs')
     if not token:
         print("❌ Нет TOKEN в Environment!")
         return
@@ -117,5 +117,6 @@ async def main():
 if __name__ == '__main__':
     import asyncio
     asyncio.run(main())
+
 
 
