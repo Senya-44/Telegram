@@ -1,6 +1,5 @@
 import re
 import logging
-import threading
 import time
 from datetime import datetime, timedelta
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -15,6 +14,11 @@ reminders = {}
 user_states = {}
 
 def start(update, context):
+    # 🔥 ОЧИСТИТЬ СОСТОЯНИЕ ПРИ /start
+    user_id = update.message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+    
     chat = update.message.chat
     user = update.message.from_user
     print(f"🚀 /start от {user.first_name} (ID:{user.id})")
@@ -46,6 +50,7 @@ def handle_message(update, context):
     chat_id = update.message.chat.id
     user_id = update.message.from_user.id
     
+    # 🔥 ПРОВЕРКА СОСТОЯНИЯ
     if user_id not in user_states:
         return
     
@@ -72,42 +77,12 @@ def handle_message(update, context):
             
             update.message.reply_text(f"✅ **{reminder['text']}** в {remind_time.strftime('%H:%M')}", parse_mode='Markdown')
             del user_states[user_id]
-            print(f"✅ Задача: {reminder['text']} → {remind_time.strftime('%H:%M')}")
+            print(f"✅ Задача создана: {reminder['text']} → {remind_time}")
         except:
             update.message.reply_text("❌ Формат: `дд.мм чч:мм`")
 
-def reminder_checker(app):
-    """🔥 ТРЕД напоминаний (НЕ asyncio!)"""
-    print("🔄 Напоминания запущены в фоне!")
-    while True:
-        try:
-            now = datetime.now()
-            for chat_id, tasks in list(reminders.items()):
-                for i, task in enumerate(tasks[:]):
-                    if task['time'] <= now and task['sends'] < 3:
-                        try:
-                            keyboard = [[InlineKeyboardButton("🛑 Стоп", callback_data=f'stop_{i}')]]
-                            app.bot.send_message(
-                                chat_id, 
-                                f"🔔 **#{task['sends']+1}/3** {task['text']}",
-                                reply_markup=InlineKeyboardMarkup(keyboard),
-                                parse_mode='Markdown'
-                            )
-                            task['sends'] += 1
-                            task['time'] += timedelta(seconds=30)
-                            print(f"🔔 #{task['sends']}: {task['text']} в {chat_id}")
-                        except Exception as e:
-                            print(f"❌ Send error: {e}")
-                    elif task['sends'] >= 3:
-                        tasks.pop(i)
-            time.sleep(10)
-        except Exception as e:
-            print(f"❌ Checker: {e}")
-            time.sleep(10)
-
 def main():
-    print("🚀 Telegram Reminder Bot v6.0 ✅ THREADING")
-    print(f"📱 Токен: {TOKEN[:20]}...")
+    print("🚀 Telegram Reminder Bot v7.0 ✅ BACKGROUND JOBQUEUE")
     
     app = Application.builder().token(TOKEN).build()
     
@@ -115,16 +90,40 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # 🔥 ТРЕД напоминаний (НЕ asyncio!)
-    reminder_thread = threading.Thread(target=reminder_checker, args=(app,), daemon=True)
-    reminder_thread.start()
+    # 🔥 JobQueue = ОФИЦИАЛЬНЫЙ фон для telegram-bot!
+    job_queue = app.job_queue
     
-    print("✅ Бот + напоминания готовы!")
-    print("🔄 Тред напоминаний запущен")
+    def check_reminders(context):
+        now = datetime.now()
+        for chat_id, tasks in list(reminders.items()):
+            for i, task in enumerate(tasks[:]):
+                if task['time'] <= now and task['sends'] < 3:
+                    try:
+                        keyboard = [[InlineKeyboardButton("🛑 Стоп", callback_data=f'stop_{i}')]]
+                        context.bot.send_message(
+                            chat_id, 
+                            f"🔔 **#{task['sends']+1}/3** {task['text']}",
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            parse_mode='Markdown'
+                        )
+                        task['sends'] += 1
+                        task['time'] += timedelta(seconds=30)
+                        print(f"🔔 #{task['sends']}: {task['text']}")
+                    except Exception as e:
+                        print(f"❌ Send: {e}")
+                elif task['sends'] >= 3:
+                    tasks.pop(i)
+    
+    # 🔥 Запуск каждые 10 секунд ОФИЦИАЛЬНЫМ способом!
+    job_queue.run_repeating(check_reminders, interval=10, first=5)
+    
+    print("✅ JobQueue запущен! Проверки каждые 10 сек")
+    print("✅ /start + кнопки + напоминания = 100%!")
     
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
+
 
 
